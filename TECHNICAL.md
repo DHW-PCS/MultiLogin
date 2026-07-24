@@ -36,7 +36,7 @@ Floodgate 等身份来源。现有代码还包括：
 
 ## Velocity 3.5.1 本机验证
 
-本分支在以下隔离拓扑上完成了一次运行验证：
+本分支在以下隔离拓扑上完成了主要运行验证：
 
 | 组件 | 已测试版本或设置 |
 | --- | --- |
@@ -68,6 +68,33 @@ Minecraft 26.2 实测 ChatSession 包 ID 为 `0x0A`。由于 MultiLogin 会拦�
 公钥包，测试后端使用 `enforce-secure-profile=false`；否则后端会拒绝未签名聊天。
 
 本次拓扑没有安装 Floodgate，因此 Floodgate 未经过本次运行验证。
+
+### Minecraft 1.21.11 后端兼容性复测
+
+由于 DHW Inf 服务器仍运行 Minecraft `1.21.11`，本分支另以相同的 Velocity
+`3.5.1` build `615`、JDK `25.0.3+9` 和 Modern Forwarding 配置完成了一次针对该版本的
+真实客户端复测：
+
+| 组件 | 已测试版本或设置 |
+| --- | --- |
+| 客户端与后端 | Minecraft `1.21.11` |
+| Fabric Loader | `0.19.3` |
+| Fabric API | `0.141.5+1.21.11` |
+| FabricProxy-Lite | `2.11.0` |
+| 认证来源 | Mojang Official |
+
+测试使用的 Fabric 服务端启动 JAR SHA-256 为
+`ed1b811d75555bd18dfc2b15199d94559ee2aab035e3c92ee43d3c4addca819f`；
+[Fabric API 0.141.5+1.21.11](https://modrinth.com/mod/fabric-api/version/zGF3drOQ) 的 SHA-256 为
+`2525f9b7bb5524d409404831f7af276a86f7f1e90245ae4bb7555fe088d00e0d`；
+[FabricProxy-Lite 2.11.0](https://modrinth.com/mod/fabricproxy-lite/version/nR8AIdvx) 的 SHA-256 为
+`ebc7abeaf6c03ac619c701ebb332de6966c6d83edfabf02434720c8fc3d03cdc`。
+
+真实 Minecraft `1.21.11` 客户端使用 Mojang Official 账号完成了两次认证、UUID/profile
+转发、进入 Fabric 后端、发送聊天消息、正常退出及重新连接。代理与后端日志没有出现认证、
+ChatSession、转发或清理异常。此复测未重复执行 DHW PCS Passport、认证拒绝、冲突登录或
+认证期间断开测试；这些路径的运行验证来自上述 Minecraft `26.2` 拓扑。两个拓扑均未测试
+Floodgate。
 
 ## 开发环境
 
@@ -117,8 +144,10 @@ velocity/build/libs/MultiLogin-Velocity-Build_<commit>.jar
 velocity/build/libs/MultiLogin-Velocity-<major>.<minor>.<patch>-dhw.jar
 ```
 
-构建会拒绝缺少 `-dhw` 后缀的正式版本号。仓库只保留手动触发的正式构建 workflow；它运行完整
-测试并上传 Actions artifact，不自动创建 GitHub Release。
+构建会拒绝缺少 `-dhw` 后缀的正式版本号。仓库只保留手动触发的正式构建 workflow；它仅允许
+从默认分支发布，在运行完整测试后同时上传 Actions artifact，并以
+`v<major>.<minor>.<patch>-dhw` tag 创建 GitHub Release、生成发行说明及上传正式 JAR。已有同名
+tag 或 Release 时 workflow 会停止，不覆盖已经发布的构件。
 
 首次构建可能生成 Gradle 缓存、各模块的 `build/` 目录、校验后的 Velocity 目标 JAR 和
 `.digests`。这些文件均不应提交。目标 JAR 的 SHA-256 不匹配时，构建会立即失败。
