@@ -45,6 +45,7 @@ public class MapperConfig implements MapperConfigAPI {
             put(765,0x07);
             put(768,0x08);
             put(771,0x09);
+            put(776,0x0A);
         }
     };
 
@@ -60,7 +61,7 @@ public class MapperConfig implements MapperConfigAPI {
             CommentedConfigurationNode rootNode = loader.load();
             CommentedConfigurationNode mapperNode = rootNode.node("mapper");
             for (Map.Entry<Integer, Integer> entry : packetMapping.entrySet()) {
-                mapperNode.node(entry.getKey().toString()).set(String.format("0x%02X", entry.getValue()));
+                mapperNode.node(entry.getKey()).set(String.format("0x%02X", entry.getValue()));
             }
             loader.save(rootNode);
         } catch (ConfigurateException e) {

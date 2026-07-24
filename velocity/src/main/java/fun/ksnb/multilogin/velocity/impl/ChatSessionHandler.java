@@ -8,6 +8,8 @@ import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.OptionalInt;
+
 public class ChatSessionHandler extends ChannelDuplexHandler {
     private final Player player;
     private final EventManager eventManager;
@@ -22,17 +24,26 @@ public class ChatSessionHandler extends ChannelDuplexHandler {
             final @NotNull Object packet
     ) throws Exception {
         if (packet instanceof ByteBuf buffer) {
-            ByteBuf c = buffer.asReadOnly();
-            c.markReaderIndex();
-            try {
-                int packetId = c.readByte();
-                ProtocolUtils.readUuid(c);
-                ProtocolUtils.readPlayerKey(player.getProtocolVersion(), c);
-                eventManager.fire(new NewChatSessionPacketIDEvent(packetId,player.getProtocolVersion(),player));
-            } catch (Throwable ignore) { } finally {
-                c.resetReaderIndex();
-            }
+            findPlayerSessionPacketId(buffer, player.getProtocolVersion()).ifPresent(packetId ->
+                    eventManager.fire(new NewChatSessionPacketIDEvent(
+                            packetId,
+                            player.getProtocolVersion(),
+                            player
+                    ))
+            );
         }
         super.channelRead(ctx, packet);
+    }
+
+    static OptionalInt findPlayerSessionPacketId(ByteBuf buffer, com.velocitypowered.api.network.ProtocolVersion version) {
+        ByteBuf candidate = buffer.asReadOnly();
+        try {
+            int packetId = ProtocolUtils.readVarInt(candidate);
+            ProtocolUtils.readUuid(candidate);
+            ProtocolUtils.readPlayerKey(version, candidate);
+            return candidate.isReadable() ? OptionalInt.empty() : OptionalInt.of(packetId);
+        } catch (Throwable ignored) {
+            return OptionalInt.empty();
+        }
     }
 }

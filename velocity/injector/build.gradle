@@ -8,13 +8,6 @@ repositories {
         url 'https://repo.papermc.io/repository/maven-public/'
     }
     mavenCentral()
-    maven { url = 'https://maven.elytrium.net/repo/' }
-}
-
-
-java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
 }
 
 dependencies {
@@ -24,11 +17,29 @@ dependencies {
 
     compileOnly 'io.netty:netty-all:4.1.86.Final'
     compileOnly 'net.minecrell:terminalconsoleappender:1.3.0'
-    compileOnly 'com.velocitypowered:velocity-api:3.4.0-SNAPSHOT'
-    annotationProcessor 'com.velocitypowered:velocity-api:3.4.0-SNAPSHOT'
+    compileOnly "com.velocitypowered:velocity-api:${rootProject.ext.velocityBaselineVersion}"
+    annotationProcessor "com.velocitypowered:velocity-api:${rootProject.ext.velocityBaselineVersion}"
+    compileOnly files(rootProject.ext.velocityBaselineFile)
 
-    
-    compileOnly 'com.velocitypowered:velocity-proxy:3.4.0-SNAPSHOT'
+    testImplementation platform('org.junit:junit-bom:5.13.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.mockito:mockito-core:5.18.0'
+    testImplementation project(":api")
+    testImplementation project(":core")
+    testImplementation project(":velocity")
+    testImplementation files(rootProject.ext.velocityBaselineFile)
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+compileJava.dependsOn rootProject.tasks.named("downloadVelocityBaseline")
+test.dependsOn rootProject.tasks.named("downloadVelocityBaseline")
+test {
+    useJUnitPlatform()
+    def testRuntimeDirectory = layout.buildDirectory.dir("test-runtime")
+    workingDir(testRuntimeDirectory)
+    doFirst {
+        testRuntimeDirectory.get().asFile.mkdirs()
+    }
 }
 
 shadowJar {

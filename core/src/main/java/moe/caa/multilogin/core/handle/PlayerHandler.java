@@ -44,7 +44,19 @@ public class PlayerHandler implements HandlerAPI {
 
     @Override
     public HandleResult pushPlayerQuitGame(UUID inGameUUID, String username) {
+        discardPlayerData(inGameUUID);
         return new HandleResult(HandleResult.Type.NONE, null);
+    }
+
+    @Override
+    public void discardPendingPlayerData(UUID inGameUUID) {
+        loginCache.remove(inGameUUID);
+    }
+
+    @Override
+    public void discardPlayerData(UUID inGameUUID) {
+        discardPendingPlayerData(inGameUUID);
+        cache.remove(inGameUUID);
     }
 
     @Override

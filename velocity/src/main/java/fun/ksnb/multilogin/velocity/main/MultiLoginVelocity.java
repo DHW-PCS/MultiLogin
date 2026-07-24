@@ -100,10 +100,20 @@ public class MultiLoginVelocity implements IPlugin {
             );
             server.getEventManager().register(this, NewChatSessionPacketIDEvent.class,
                     (AwaitingEventExecutor<NewChatSessionPacketIDEvent>) packetEvent -> EventTask.withContinuation(continuation -> {
-                        runServer.getPlayerManager().kickPlayerIfOnline(packetEvent.getPlayer().getUniqueId(), multiCoreAPI.getLanguageHandler().getMessage("reconnect_msg"));
-                        multiCoreAPI.getMapperConfig().getPacketMapping().put(packetEvent.getVersion().getProtocol(),packetEvent.getPacketID());
-                        multiCoreAPI.getMapperConfig().save();
-                        injector.registerChatSession(multiCoreAPI.getMapperConfig().getPacketMapping());
+                        try {
+                            runServer.getPlayerManager().kickPlayerIfOnline(
+                                    packetEvent.getPlayer().getUniqueId(),
+                                    multiCoreAPI.getLanguageHandler().getMessage("reconnect_msg")
+                            );
+                            multiCoreAPI.getMapperConfig().getPacketMapping().put(
+                                    packetEvent.getVersion().getProtocol(),
+                                    packetEvent.getPacketID()
+                            );
+                            multiCoreAPI.getMapperConfig().save();
+                            injector.registerChatSession(multiCoreAPI.getMapperConfig().getPacketMapping());
+                        } finally {
+                            continuation.resume();
+                        }
                     })
             );
         }
@@ -136,17 +146,36 @@ public class MultiLoginVelocity implements IPlugin {
 
     private void injectPlayer(final Player player) {
         final ConnectedPlayer connectedPlayer = (ConnectedPlayer) player;
-        connectedPlayer.getConnection()
-                .getChannel()
-                .pipeline()
-                .addBefore(Connections.HANDLER, KEY, new ChatSessionHandler(player,server.getEventManager()));
+        final Channel channel = connectedPlayer.getConnection().getChannel();
+        installChatSessionHandler(
+                channel,
+                new ChatSessionHandler(player, server.getEventManager())
+        );
+    }
+
+    static void installChatSessionHandler(Channel channel, ChannelHandler handler) {
+        channel.eventLoop().execute(() -> {
+            if (channel.pipeline().get(KEY) == null) {
+                channel.pipeline().addBefore(
+                        Connections.HANDLER,
+                        KEY,
+                        handler
+                );
+            }
+        });
     }
 
     private void removePlayer(final Player player) {
         final ConnectedPlayer connectedPlayer = (ConnectedPlayer) player;
         final Channel channel = connectedPlayer.getConnection().getChannel();
-        channel.eventLoop().submit(() -> {
-            channel.pipeline().remove(KEY);
+        removeChatSessionHandler(channel);
+    }
+
+    static void removeChatSessionHandler(Channel channel) {
+        channel.eventLoop().execute(() -> {
+            if (channel.pipeline().get(KEY) != null) {
+                channel.pipeline().remove(KEY);
+            }
         });
     }
 }

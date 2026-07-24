@@ -1,30 +1,29 @@
 package moe.caa.multilogin.velocity.injector;
 
+import static com.google.common.collect.Iterables.getLast;
+import static com.velocitypowered.api.network.ProtocolVersion.SUPPORTED_VERSIONS;
+
 import com.velocitypowered.api.network.ProtocolVersion;
 import com.velocitypowered.proxy.protocol.MinecraftPacket;
 import com.velocitypowered.proxy.protocol.StateRegistry;
 import com.velocitypowered.proxy.protocol.packet.EncryptionResponsePacket;
-import com.velocitypowered.proxy.protocol.packet.ServerLoginPacket;
 import io.netty.util.collection.IntObjectMap;
-import moe.caa.multilogin.api.internal.injector.Injector;
-import moe.caa.multilogin.api.internal.logger.LoggerProvider;
-import moe.caa.multilogin.api.internal.main.MultiCoreAPI;
-import moe.caa.multilogin.api.internal.util.reflect.NoSuchEnumException;
-import moe.caa.multilogin.api.internal.util.reflect.ReflectUtil;
-import moe.caa.multilogin.velocity.injector.handler.MultiInitialLoginSessionHandler;
-import moe.caa.multilogin.velocity.injector.redirect.auth.MultiEncryptionResponse;
-import moe.caa.multilogin.velocity.injector.redirect.auth.MultiServerLogin;
-import moe.caa.multilogin.velocity.injector.redirect.chat.PlayerSessionPacketBlocker;
-
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.util.*;
+import java.util.Collection;
+import java.util.EnumSet;
+import java.util.LinkedList;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.function.Supplier;
-
-import static com.google.common.collect.Iterables.getLast;
-import static com.velocitypowered.api.network.ProtocolVersion.SUPPORTED_VERSIONS;
+import moe.caa.multilogin.api.internal.injector.Injector;
+import moe.caa.multilogin.api.internal.logger.LoggerProvider;
+import moe.caa.multilogin.api.internal.main.MultiCoreAPI;
+import moe.caa.multilogin.api.internal.util.reflect.ReflectUtil;
+import moe.caa.multilogin.velocity.injector.handler.MultiInitialLoginSessionHandler;
+import moe.caa.multilogin.velocity.injector.redirect.auth.MultiEncryptionResponse;
+import moe.caa.multilogin.velocity.injector.redirect.chat.PlayerSessionPacketBlocker;
 
 /**
  * Velocity 注入程序
@@ -32,203 +31,423 @@ import static com.velocitypowered.api.network.ProtocolVersion.SUPPORTED_VERSIONS
 public class VelocityInjector implements Injector {
 
     @Override
-    public void inject(MultiCoreAPI multiCoreAPI) throws NoSuchFieldException, ClassNotFoundException, NoSuchMethodException, IllegalAccessException, InvocationTargetException, NoSuchEnumException {
+    public void inject(MultiCoreAPI multiCoreAPI) throws Throwable {
+        validateCompatibility();
+
+        StateRegistry.PacketRegistry serverbound = getServerboundPacketRegistry(StateRegistry.LOGIN);
+        int redirected = redirectInput(
+                serverbound,
+                EncryptionResponsePacket.class,
+                () -> new MultiEncryptionResponse(multiCoreAPI)
+        );
+        if (redirected == 0) {
+            throw new IllegalStateException(
+                    "Velocity 3.5.1 compatibility check failed: "
+                            + "EncryptionResponsePacket was not registered"
+            );
+        }
+    }
+
+    void validateCompatibility() throws Throwable {
         MultiInitialLoginSessionHandler.init();
-        // auth
-        {
-            StateRegistry.PacketRegistry serverbound = getServerboundPacketRegistry(StateRegistry.LOGIN);
-            redirectInput(serverbound, EncryptionResponsePacket.class, () -> new MultiEncryptionResponse(multiCoreAPI));
-            redirectInput(serverbound, ServerLoginPacket.class, () -> new MultiServerLogin(multiCoreAPI));
-        }
+        requireField(StateRegistry.class, "serverbound", StateRegistry.PacketRegistry.class);
+        requireField(StateRegistry.PacketRegistry.class, "versions", Map.class);
+        requireField(
+                StateRegistry.PacketRegistry.ProtocolRegistry.class,
+                "packetIdToSupplier",
+                IntObjectMap.class
+        );
+        requireField(
+                StateRegistry.PacketRegistry.ProtocolRegistry.class,
+                "packetClassToId",
+                Map.class
+        );
+        requireField(StateRegistry.PacketMapping.class, "id", int.class);
+        requireField(StateRegistry.PacketMapping.class, "protocolVersion", ProtocolVersion.class);
+        requireField(
+                StateRegistry.PacketMapping.class,
+                "lastValidProtocolVersion",
+                ProtocolVersion.class
+        );
+        requireField(StateRegistry.PacketMapping.class, "encodeOnly", boolean.class);
+        StateRegistry.PacketMapping.class.getDeclaredConstructor(
+                int.class,
+                ProtocolVersion.class,
+                ProtocolVersion.class,
+                boolean.class
+        );
     }
 
-    public void registerChatSession(Map<Integer,Integer> packetMapping) {
-        // chat
+    @Override
+    public void registerChatSession(Map<Integer, Integer> packetMapping) {
         try {
-            StateRegistry.PacketRegistry serverbound = getServerboundPacketRegistry(StateRegistry.PLAY);
+            StateRegistry.PacketRegistry serverbound =
+                    getServerboundPacketRegistry(StateRegistry.PLAY);
 
-            LinkedList<StateRegistry.PacketMapping> playerSessionPacketMapping = new LinkedList<>();
-            for (Map.Entry<Integer, Integer> entry : packetMapping.entrySet()) {
-                LoggerProvider.getLogger().debug("Register PlayerSessionPacketBlocker for protocol version: " + entry.getKey());
-                playerSessionPacketMapping.add(createPacketMapping(entry.getValue(), ProtocolVersion.getProtocolVersion(entry.getKey()), false));
-            }
-            registerPacket(serverbound, PlayerSessionPacketBlocker.class, PlayerSessionPacketBlocker::new, playerSessionPacketMapping.toArray(new StateRegistry.PacketMapping[0]));
-
-        } catch (Throwable throwable){
-            LoggerProvider.getLogger().error("Unable to register PlayerSessionPacketBlocker, chat session blocker does not work as expected.", throwable);
-        }
-    }
-
-    private StateRegistry.PacketRegistry getServerboundPacketRegistry(StateRegistry stateRegistry) throws NoSuchFieldException, IllegalAccessException {
-        Field serverboundField = ReflectUtil.handleAccessible(StateRegistry.class.getDeclaredField("serverbound"));
-        return  (StateRegistry.PacketRegistry) serverboundField.get(stateRegistry);
-    }
-
-    /**
-     * 重定向数据包
-     *
-     * @param bound            数据包方向
-     * @param originalClass    原始数据包类对象
-     * @param supplierRedirect 重定向后的 Supplier
-     */
-    private <T> void redirectInput(StateRegistry.PacketRegistry bound, Class<T> originalClass, Supplier<? extends T> supplierRedirect) throws NoSuchFieldException, InvocationTargetException, IllegalAccessException, NoSuchMethodException {
-        Field f$packetIdToSupplier = StateRegistry.PacketRegistry.ProtocolRegistry.class.getDeclaredField("packetIdToSupplier");
-        f$packetIdToSupplier.setAccessible(true);
-        ReflectUtil.handleAccessible(f$packetIdToSupplier);
-
-
-        Method map$entry$setValueMethod = Map.Entry.class.getMethod("setValue", Object.class);
-
-        for (Object protocolRegistry : getProtocolRegistries(bound)) {
-            Map<?, ?> packetIdToSupplier = (Map<?, ?>) f$packetIdToSupplier.get(protocolRegistry); // IntObjectMap<Supplier<? extends MinecraftPacket>>
-            for (Map.Entry<?, ?> e : packetIdToSupplier.entrySet()) {
-                MinecraftPacket minecraftPacketObject = (MinecraftPacket) ((Supplier<?>) e.getValue()).get();
-                // 类匹配则进行替换
-                if (minecraftPacketObject.getClass().equals(originalClass)) {
-                    map$entry$setValueMethod.invoke(e, supplierRedirect);
+            var entries = new LinkedList<>(new TreeMap<>(packetMapping).entrySet());
+            for (int index = 0; index < entries.size(); index++) {
+                Map.Entry<Integer, Integer> entry = entries.get(index);
+                ProtocolVersion protocolVersion =
+                        ProtocolVersion.getProtocolVersion(entry.getKey());
+                if (protocolVersion.isUnknown() || !protocolVersion.isSupported()) {
+                    LoggerProvider.getLogger().warn(
+                            "Ignoring PlayerSessionPacketBlocker mapping for unsupported "
+                            + "protocol version: " + entry.getKey()
+                    );
+                    continue;
                 }
+                ProtocolVersion nextProtocolVersion = index + 1 < entries.size()
+                        ? ProtocolVersion.getProtocolVersion(entries.get(index + 1).getKey())
+                        : null;
+                ProtocolVersion lastCompatibleVersion = findLastCompatibleVersion(
+                        serverbound,
+                        protocolVersion,
+                        nextProtocolVersion,
+                        entry.getValue(),
+                        PlayerSessionPacketBlocker.class
+                );
+                LoggerProvider.getLogger().debug(
+                        "Register PlayerSessionPacketBlocker for protocol version: "
+                                + entry.getKey() + " through "
+                                + lastCompatibleVersion.getProtocol()
+                );
+                registerPacket(
+                        serverbound,
+                        PlayerSessionPacketBlocker.class,
+                        PlayerSessionPacketBlocker::new,
+                        new StateRegistry.PacketMapping[]{
+                                createPacketMapping(
+                                        entry.getValue(),
+                                        protocolVersion,
+                                        lastCompatibleVersion,
+                                        false
+                                )
+                        }
+                );
+            }
+        } catch (Throwable throwable) {
+            LoggerProvider.getLogger().error(
+                    "Unable to register PlayerSessionPacketBlocker, "
+                            + "chat session blocker does not work as expected.",
+                    throwable
+            );
+            throw new IllegalStateException(
+                    "Velocity 3.5.1 compatibility check failed while registering "
+                            + "chat session mappings",
+                    throwable
+            );
+        }
+    }
+
+    private ProtocolVersion findLastCompatibleVersion(
+            StateRegistry.PacketRegistry bound,
+            ProtocolVersion from,
+            ProtocolVersion next,
+            int packetId,
+            Class<? extends MinecraftPacket> packetClass
+    ) throws NoSuchFieldException, IllegalAccessException {
+        ProtocolVersion lastCompatible = from;
+        boolean inRange = false;
+        for (ProtocolVersion protocol : SUPPORTED_VERSIONS) {
+            if (protocol == from) {
+                inRange = true;
+            }
+            if (!inRange || protocol == next) {
+                continue;
+            }
+            if (next != null && protocol.greaterThan(next)) {
+                break;
+            }
+
+            StateRegistry.PacketRegistry.ProtocolRegistry registry =
+                    (StateRegistry.PacketRegistry.ProtocolRegistry)
+                            getProtocolRegistriesMap(bound).get(protocol);
+            if (registry == null) {
+                break;
+            }
+            if (!isPacketIdCompatible(registry, packetId, packetClass)) {
+                if (protocol == from) {
+                    return from;
+                }
+                LoggerProvider.getLogger().warn(
+                        "Stopped inherited PlayerSessionPacketBlocker mapping before "
+                                + protocol.getProtocol() + " because packet id "
+                                + packetId + " is already occupied"
+                );
+                break;
+            }
+            lastCompatible = protocol;
+            if (next == null) {
+                break;
             }
         }
-    }
-
-    /**
-     * 追加注册出口包
-     *
-     * @param bound         数据包方向
-     * @param originalClass 原始数据包类对象
-     * @param appendClass   追加的数据包类对象
-     */
-    private <T> void redirectOutput(StateRegistry.PacketRegistry bound, Class<T> originalClass, Class<? extends T> appendClass) throws NoSuchFieldException, InvocationTargetException, IllegalAccessException, NoSuchMethodException {
-        Field f$packetClassToId = StateRegistry.PacketRegistry.ProtocolRegistry.class.getDeclaredField("packetClassToId");
-        ReflectUtil.handleAccessible(f$packetClassToId);
-
-        Method map$putMethod = Map.class.getMethod("put", Object.class, Object.class);
-
-        for (Object protocolRegistry : getProtocolRegistries(bound)) {
-            Map<?, ?> packetClassToId = (Map<?, ?>) f$packetClassToId.get(protocolRegistry);// Object2IntMap<Class<? extends MinecraftPacket>>
-            if (!packetClassToId.containsKey(originalClass)) continue;
-            map$putMethod.invoke(packetClassToId, appendClass, packetClassToId.get(originalClass));
-        }
-    }
-
-    private Collection<?> getProtocolRegistries(StateRegistry.PacketRegistry bound) throws NoSuchFieldException, IllegalAccessException {
-        return getProtocolRegistriesMap(bound).values();
-    }
-
-    private Map<?, ?> getProtocolRegistriesMap(StateRegistry.PacketRegistry bound) throws NoSuchFieldException, IllegalAccessException {
-        Field f$versions = StateRegistry.PacketRegistry.class.getDeclaredField("versions");
-        ReflectUtil.handleAccessible(f$versions);
-
-        //Map<ProtocolVersion, ProtocolRegistry> versions;
-        return (Map<?, ?>) f$versions.get(bound);
-    }
-
-    private StateRegistry.PacketMapping createPacketMapping(int id, ProtocolVersion protocolVersion, ProtocolVersion lastValidProtocolVersion, boolean packetDecoding) throws NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
-        Constructor<StateRegistry.PacketMapping> constructor =  ReflectUtil.handleAccessible(StateRegistry.PacketMapping.class.
-                getDeclaredConstructor(int.class, ProtocolVersion.class, ProtocolVersion.class, boolean.class));
-        return constructor.newInstance(id, protocolVersion, lastValidProtocolVersion, packetDecoding);
-    }
-
-    private StateRegistry.PacketMapping createPacketMapping(int id, ProtocolVersion protocolVersion, boolean packetDecoding) throws NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
-        return createPacketMapping(id, protocolVersion, null, packetDecoding);
-    }
-
-    private <P extends MinecraftPacket> void registerPacket(StateRegistry.PacketRegistry packetRegistry, Class<P> clazz, Supplier<P> packetSupplier, StateRegistry.PacketMapping[] mappings) throws IllegalAccessException {
-        //Method register = ReflectUtil.handleAccessible(packetRegistry.getClass().getDeclaredMethod("register", Class.class, Supplier.class, StateRegistry.PacketMapping[].class));
-        //register.invoke(packetRegistry, clazz, packetSupplier, mappings);
-        try {
-            register(packetRegistry,clazz,packetSupplier,mappings);
-        } catch (NoSuchFieldException e) {
-            throw new RuntimeException(e);
-        }
+        return lastCompatible;
     }
 
     @SuppressWarnings("unchecked")
-    <P extends MinecraftPacket> void register(StateRegistry.PacketRegistry bound,Class<P> clazz, Supplier<P> packetSupplier,
-                                              StateRegistry.PacketMapping... mappings) throws NoSuchFieldException, IllegalAccessException {
+    private boolean isPacketIdCompatible(
+            StateRegistry.PacketRegistry.ProtocolRegistry registry,
+            int packetId,
+            Class<? extends MinecraftPacket> packetClass
+    ) throws NoSuchFieldException, IllegalAccessException {
+        Field packetIdToSupplierField = requireField(
+                StateRegistry.PacketRegistry.ProtocolRegistry.class,
+                "packetIdToSupplier",
+                IntObjectMap.class
+        );
+        IntObjectMap<Supplier<? extends MinecraftPacket>> packetIdToSupplier =
+                (IntObjectMap<Supplier<? extends MinecraftPacket>>)
+                        packetIdToSupplierField.get(registry);
+        Supplier<? extends MinecraftPacket> registeredSupplier =
+                packetIdToSupplier.get(packetId);
+        return registeredSupplier == null
+                || packetClass.isInstance(registeredSupplier.get());
+    }
+
+    StateRegistry.PacketRegistry getServerboundPacketRegistry(StateRegistry stateRegistry)
+            throws NoSuchFieldException, IllegalAccessException {
+        Field serverboundField = requireField(
+                StateRegistry.class,
+                "serverbound",
+                StateRegistry.PacketRegistry.class
+        );
+        return (StateRegistry.PacketRegistry) serverboundField.get(stateRegistry);
+    }
+
+    @SuppressWarnings("unchecked")
+    int redirectInput(
+            StateRegistry.PacketRegistry bound,
+            Class<? extends MinecraftPacket> originalClass,
+            Supplier<? extends MinecraftPacket> supplierRedirect
+    ) throws NoSuchFieldException, IllegalAccessException {
+        Field packetIdToSupplierField = requireField(
+                StateRegistry.PacketRegistry.ProtocolRegistry.class,
+                "packetIdToSupplier",
+                IntObjectMap.class
+        );
+        int redirected = 0;
+        for (Object protocolRegistry : getProtocolRegistries(bound)) {
+            IntObjectMap<Supplier<? extends MinecraftPacket>> packetIdToSupplier =
+                    (IntObjectMap<Supplier<? extends MinecraftPacket>>)
+                            packetIdToSupplierField.get(protocolRegistry);
+            for (IntObjectMap.PrimitiveEntry<Supplier<? extends MinecraftPacket>> entry
+                    : packetIdToSupplier.entries()) {
+                MinecraftPacket packet = entry.value().get();
+                if (packet.getClass().equals(originalClass)) {
+                    entry.setValue(supplierRedirect);
+                    redirected++;
+                }
+            }
+        }
+        return redirected;
+    }
+
+    private Collection<?> getProtocolRegistries(StateRegistry.PacketRegistry bound)
+            throws NoSuchFieldException, IllegalAccessException {
+        return getProtocolRegistriesMap(bound).values();
+    }
+
+    private Map<?, ?> getProtocolRegistriesMap(StateRegistry.PacketRegistry bound)
+            throws NoSuchFieldException, IllegalAccessException {
+        Field versionsField = requireField(
+                StateRegistry.PacketRegistry.class,
+                "versions",
+                Map.class
+        );
+        return (Map<?, ?>) versionsField.get(bound);
+    }
+
+    StateRegistry.PacketMapping createPacketMapping(
+            int id,
+            ProtocolVersion protocolVersion,
+            ProtocolVersion lastValidProtocolVersion,
+            boolean packetDecoding
+    ) throws NoSuchMethodException, InvocationTargetException,
+            InstantiationException, IllegalAccessException {
+        Constructor<StateRegistry.PacketMapping> constructor = ReflectUtil.handleAccessible(
+                StateRegistry.PacketMapping.class.getDeclaredConstructor(
+                        int.class,
+                        ProtocolVersion.class,
+                        ProtocolVersion.class,
+                        boolean.class
+                )
+        );
+        return constructor.newInstance(
+                id,
+                protocolVersion,
+                lastValidProtocolVersion,
+                packetDecoding
+        );
+    }
+
+    StateRegistry.PacketMapping createPacketMapping(
+            int id,
+            ProtocolVersion protocolVersion,
+            boolean packetDecoding
+    ) throws NoSuchMethodException, InvocationTargetException,
+            InstantiationException, IllegalAccessException {
+        return createPacketMapping(id, protocolVersion, null, packetDecoding);
+    }
+
+    private <P extends MinecraftPacket> void registerPacket(
+            StateRegistry.PacketRegistry packetRegistry,
+            Class<P> clazz,
+            Supplier<P> packetSupplier,
+            StateRegistry.PacketMapping[] mappings
+    ) throws NoSuchFieldException, IllegalAccessException {
+        register(packetRegistry, clazz, packetSupplier, mappings);
+    }
+
+    @SuppressWarnings("unchecked")
+    <P extends MinecraftPacket> void register(
+            StateRegistry.PacketRegistry bound,
+            Class<P> clazz,
+            Supplier<P> packetSupplier,
+            StateRegistry.PacketMapping... mappings
+    ) throws NoSuchFieldException, IllegalAccessException {
         if (mappings.length == 0) {
             throw new IllegalArgumentException("At least one mapping must be provided.");
         }
 
         for (int i = 0; i < mappings.length; i++) {
             StateRegistry.PacketMapping current = mappings[i];
-            StateRegistry.PacketMapping next = (i + 1 < mappings.length) ? mappings[i + 1] : current;
+            StateRegistry.PacketMapping next =
+                    i + 1 < mappings.length ? mappings[i + 1] : current;
 
-            Field protocolVersion = current.getClass().getDeclaredField("protocolVersion");
-            protocolVersion.setAccessible(true);
-            ProtocolVersion from = (ProtocolVersion) protocolVersion.get(current);
-            Field lastValidProtocolVersion = current.getClass().getDeclaredField("lastValidProtocolVersion");
-            lastValidProtocolVersion.setAccessible(true);
-            ProtocolVersion lastValid = (ProtocolVersion) lastValidProtocolVersion.get(current);
+            Field protocolVersionField = requireField(
+                    StateRegistry.PacketMapping.class,
+                    "protocolVersion",
+                    ProtocolVersion.class
+            );
+            ProtocolVersion from = (ProtocolVersion) protocolVersionField.get(current);
+            Field lastValidProtocolVersionField = requireField(
+                    StateRegistry.PacketMapping.class,
+                    "lastValidProtocolVersion",
+                    ProtocolVersion.class
+            );
+            ProtocolVersion lastValid =
+                    (ProtocolVersion) lastValidProtocolVersionField.get(current);
             if (lastValid != null) {
                 if (next != current) {
-                    throw new IllegalArgumentException("Cannot add a mapping after last valid mapping");
+                    throw new IllegalArgumentException(
+                            "Cannot add a mapping after last valid mapping"
+                    );
                 }
                 if (from.greaterThan(lastValid)) {
                     throw new IllegalArgumentException(
-                            "Last mapping version cannot be higher than highest mapping version");
+                            "Last mapping version cannot be higher than highest mapping version"
+                    );
                 }
             }
-            Field nextProtocolVersion = next.getClass().getDeclaredField("protocolVersion");
-            nextProtocolVersion.setAccessible(true);
-            ProtocolVersion to = current == next ? lastValid != null
-                    ? lastValid : getLast(SUPPORTED_VERSIONS) : (ProtocolVersion) nextProtocolVersion.get(next);
 
-            ProtocolVersion lastInList = lastValid != null ? lastValid : getLast(SUPPORTED_VERSIONS);
-
+            ProtocolVersion to = current == next
+                    ? lastValid != null ? lastValid : getLast(SUPPORTED_VERSIONS)
+                    : (ProtocolVersion) protocolVersionField.get(next);
+            ProtocolVersion lastInList =
+                    lastValid != null ? lastValid : getLast(SUPPORTED_VERSIONS);
             if (from.noLessThan(to) && from != lastInList) {
                 throw new IllegalArgumentException(String.format(
-                        "Next mapping version (%s) should be lower then current (%s)", to, from));
+                        "Next mapping version (%s) should be lower then current (%s)",
+                        to,
+                        from
+                ));
             }
 
             for (ProtocolVersion protocol : EnumSet.range(from, to)) {
                 if (protocol == to && next != current) {
                     break;
                 }
-                StateRegistry.PacketRegistry.ProtocolRegistry registry = (
+                StateRegistry.PacketRegistry.ProtocolRegistry registry =
                         (StateRegistry.PacketRegistry.ProtocolRegistry)
-                                getProtocolRegistriesMap(bound).get(protocol)
-                );
-
+                                getProtocolRegistriesMap(bound).get(protocol);
                 if (registry == null) {
                     throw new IllegalArgumentException(
-                            "Unknown protocol version " + protocolVersion);
+                            "Unknown protocol version " + protocol
+                    );
                 }
-
-                Field packetIdToSupplier = registry.getClass().getDeclaredField("packetIdToSupplier");
-                packetIdToSupplier.setAccessible(true);
-                IntObjectMap<Supplier<? extends MinecraftPacket>> supplierIntObjectMap = (IntObjectMap<Supplier<? extends MinecraftPacket>>) packetIdToSupplier.get(registry);
-                Field idField = current.getClass().getDeclaredField("id");
-                idField.setAccessible(true);
-                if (supplierIntObjectMap.containsKey(idField.getInt(current))) {
-                    continue;
-                    /*
-                    throw new IllegalArgumentException(
-                            "Can not register class "
-                                    + clazz.getSimpleName()
-                                    + " with id "
-                                    + current.id
-                                    + " for "
-                                    + registry.version
-                                    + " because another packet is already registered");
-                     */
-                }
-
-                Field packetClassToIdField = registry.getClass().getDeclaredField("packetClassToId");
-                packetClassToIdField.setAccessible(true);
-                Map<Class<? extends MinecraftPacket>, Integer> packetClassToId = (Map<Class<? extends MinecraftPacket>, Integer>) packetClassToIdField.get(registry);
-                if (packetClassToId.containsKey(clazz)) {
-                    throw new IllegalArgumentException(
-                            clazz.getSimpleName() + " is already registered for version " + registry.version);
-                }
-
-                Field encodeOnly = current.getClass().getDeclaredField("encodeOnly");
-                encodeOnly.setAccessible(true);
-                if (!encodeOnly.getBoolean(current)) {
-                    supplierIntObjectMap.put(idField.getInt(current), packetSupplier);
-                }
-                packetClassToId.put(clazz, idField.getInt(current));
+                registerForProtocol(registry, current, clazz, packetSupplier);
             }
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private <P extends MinecraftPacket> void registerForProtocol(
+            StateRegistry.PacketRegistry.ProtocolRegistry registry,
+            StateRegistry.PacketMapping mapping,
+            Class<P> clazz,
+            Supplier<P> packetSupplier
+    ) throws NoSuchFieldException, IllegalAccessException {
+        Field packetIdToSupplierField = requireField(
+                StateRegistry.PacketRegistry.ProtocolRegistry.class,
+                "packetIdToSupplier",
+                IntObjectMap.class
+        );
+        IntObjectMap<Supplier<? extends MinecraftPacket>> packetIdToSupplier =
+                (IntObjectMap<Supplier<? extends MinecraftPacket>>)
+                        packetIdToSupplierField.get(registry);
+
+        Field packetClassToIdField = requireField(
+                StateRegistry.PacketRegistry.ProtocolRegistry.class,
+                "packetClassToId",
+                Map.class
+        );
+        Map<Class<? extends MinecraftPacket>, Integer> packetClassToId =
+                (Map<Class<? extends MinecraftPacket>, Integer>)
+                        packetClassToIdField.get(registry);
+
+        int packetId = requireField(
+                StateRegistry.PacketMapping.class,
+                "id",
+                int.class
+        ).getInt(mapping);
+
+        Integer registeredId = packetClassToId.get(clazz);
+        if (registeredId != null && registeredId != packetId) {
+            throw new IllegalArgumentException(
+                    clazz.getSimpleName() + " is already registered with id "
+                            + registeredId + " for version " + registry.version
+            );
+        }
+
+        Supplier<? extends MinecraftPacket> registeredSupplier =
+                packetIdToSupplier.get(packetId);
+        if (registeredSupplier != null) {
+            MinecraftPacket registeredPacket = registeredSupplier.get();
+            if (!clazz.isInstance(registeredPacket)) {
+                throw new IllegalArgumentException(
+                        "Packet id " + packetId + " is already registered to "
+                                + registeredPacket.getClass().getSimpleName()
+                                + " for version " + registry.version
+                );
+            }
+            packetClassToId.put(clazz, packetId);
+            return;
+        }
+
+        boolean encodeOnly = requireField(
+                StateRegistry.PacketMapping.class,
+                "encodeOnly",
+                boolean.class
+        ).getBoolean(mapping);
+        if (!encodeOnly) {
+            packetIdToSupplier.put(packetId, packetSupplier);
+        }
+        packetClassToId.put(clazz, packetId);
+    }
+
+    private static Field requireField(
+            Class<?> owner,
+            String name,
+            Class<?> expectedType
+    ) throws NoSuchFieldException {
+        Field field = owner.getDeclaredField(name);
+        if (!expectedType.isAssignableFrom(field.getType())) {
+            throw new NoSuchFieldException(
+                    owner.getName() + "." + name + " has type "
+                            + field.getType().getName() + ", expected "
+                            + expectedType.getName()
+            );
+        }
+        return ReflectUtil.handleAccessible(field);
     }
 }

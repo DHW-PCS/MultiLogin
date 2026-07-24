@@ -42,6 +42,12 @@ public class GlobalListener {
 
     @Subscribe(order = PostOrder.FIRST)
     public void onDisconnect(DisconnectEvent event) {
+        if (event.getLoginStatus() == DisconnectEvent.LoginStatus.CONFLICTING_LOGIN) {
+            multiLoginVelocity.getMultiCoreAPI().getPlayerHandler().discardPendingPlayerData(
+                    event.getPlayer().getUniqueId()
+            );
+            return;
+        }
         multiLoginVelocity.getMultiCoreAPI().getPlayerHandler().pushPlayerQuitGame(
                 event.getPlayer().getUniqueId(),
                 event.getPlayer().getUsername()

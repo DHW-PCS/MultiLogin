@@ -25,6 +25,9 @@ public class SemVersion {
     public static SemVersion of(String version) {
         if (ValueUtil.isEmpty(version)) return null;
         if (version.toLowerCase(Locale.ROOT).startsWith("build_")) return null;
+        if (version.toLowerCase(Locale.ROOT).endsWith("-dhw")) {
+            version = version.substring(0, version.length() - "-dhw".length());
+        }
         // 1.0.0-RC.4
         String[] split = version.split("-");
         String[] mmp = split[0].split("\\.");

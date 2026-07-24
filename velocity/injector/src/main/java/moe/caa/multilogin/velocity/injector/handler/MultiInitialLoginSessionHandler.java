@@ -132,7 +132,8 @@ public class MultiInitialLoginSessionHandler {
                         VelocityServer.class,
                         LoginInboundConnection.class,
                         com.velocitypowered.api.util.GameProfile.class,
-                        boolean.class
+                        boolean.class,
+                        String.class
                 )
         ));
     }
@@ -183,6 +184,9 @@ public class MultiInitialLoginSessionHandler {
 
             multiCoreAPI.getPlugin().getRunServer().getScheduler().runTaskAsync(() -> {
                 LoginAuthResult result = (LoginAuthResult) multiCoreAPI.getAuthHandler().auth(username, serverId, playerIp);
+                GameProfile authenticatedProfile = result.getResult() == AuthResult.Result.ALLOW
+                        ? result.getResponse()
+                        : null;
                 try {
                     if (mcConnection.getChannel().eventLoop().submit(() -> {
                         if (this.mcConnection.isClosed()) return false;
@@ -217,8 +221,11 @@ public class MultiInitialLoginSessionHandler {
                             mcConnection.getChannel().eventLoop().submit(() -> {
                                 try {
                                     this.mcConnection.setActiveSessionHandler(StateRegistry.LOGIN,
-                                            (AuthSessionHandler) authSessionHandler_allArgsConstructor.invoke(
-                                                    this.server, inbound, generateGameProfile(finalGameProfile), true
+                                            createAuthSessionHandler(
+                                                    this.server,
+                                                    inbound,
+                                                    generateGameProfile(finalGameProfile),
+                                                    serverId
                                             ));
                                 } catch (Throwable e) {
                                     throw new RuntimeException(e);
@@ -228,8 +235,17 @@ public class MultiInitialLoginSessionHandler {
                         } else {
                             this.inbound.disconnect(Component.text(result.getKickMessage()));
                         }
+                    } else if (authenticatedProfile != null) {
+                        multiCoreAPI.getPlayerHandler().discardPendingPlayerData(
+                                authenticatedProfile.getId()
+                        );
                     }
                 } catch (Throwable e){
+                    if (authenticatedProfile != null) {
+                        multiCoreAPI.getPlayerHandler().discardPendingPlayerData(
+                                authenticatedProfile.getId()
+                        );
+                    }
                     LoggerProvider.getLogger().error("An exception occurred while processing validation results.", e);
                     if (isEncrypted()) {
                         getInbound().disconnect(Component.text(multiCoreAPI.getLanguageHandler().getMessage("auth_error")));
@@ -241,6 +257,21 @@ public class MultiInitialLoginSessionHandler {
             LoggerProvider.getLogger().error("Unable to enable encryption.", var9);
             this.mcConnection.close(true);
         }
+    }
+
+    static AuthSessionHandler createAuthSessionHandler(
+            VelocityServer server,
+            LoginInboundConnection inbound,
+            com.velocitypowered.api.util.GameProfile profile,
+            String serverIdHash
+    ) throws Throwable {
+        return (AuthSessionHandler) authSessionHandler_allArgsConstructor.invoke(
+                server,
+                inbound,
+                profile,
+                true,
+                serverIdHash
+        );
     }
 
     private com.velocitypowered.api.util.GameProfile generateGameProfile(GameProfile response) {

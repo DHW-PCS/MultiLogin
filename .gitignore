@@ -8,6 +8,7 @@
 /*/*/*/*/build/
 /input/
 /output/
+/.local-test/
 run/
 fabric/.gradle/*
 fabric/.gradle/
@@ -23,3 +24,4 @@ fabric/.gradle/
 /velocity/libraries/*
 !/velocity/libraries/README.md
 /velocity/libraries/Velocity/
+AGENTS.md

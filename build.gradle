@@ -1,5 +1,6 @@
 import groovy.json.JsonOutput
 import org.apache.tools.ant.filters.ReplaceTokens
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 
 
@@ -8,6 +9,73 @@ plugins {
 }
 
 apply from: './constant.gradle'
+
+def velocityBaselineVersion = providers.gradleProperty("velocity_baseline_version").get()
+def velocityBaselineBuild = providers.gradleProperty("velocity_baseline_build").get()
+def velocityBaselineSha256 = providers.gradleProperty("velocity_baseline_sha256").get()
+def velocityBaselineUrl = providers.gradleProperty("velocity_baseline_url").get()
+def velocityBaselineFile = layout.buildDirectory.file(
+        "velocity-dependencies/velocity-${velocityBaselineVersion}-${velocityBaselineBuild}.jar"
+)
+def calculateSha256 = { File input ->
+    def digest = MessageDigest.getInstance("SHA-256")
+    input.withInputStream { stream ->
+        byte[] buffer = new byte[8192]
+        int read
+        while ((read = stream.read(buffer)) != -1) {
+            digest.update(buffer, 0, read)
+        }
+    }
+    digest.digest().encodeHex().toString()
+}
+
+ext.velocityBaselineVersion = velocityBaselineVersion
+ext.velocityBaselineFile = velocityBaselineFile
+
+tasks.register("downloadVelocityBaseline") {
+    description = "Downloads and verifies the pinned target Velocity server dependency."
+    group = "build setup"
+
+    inputs.property("url", velocityBaselineUrl)
+    inputs.property("sha256", velocityBaselineSha256)
+    outputs.file(velocityBaselineFile)
+    outputs.upToDateWhen {
+        def cachedFile = velocityBaselineFile.get().asFile
+        cachedFile.isFile() && calculateSha256(cachedFile) == velocityBaselineSha256
+    }
+
+    doLast {
+        def outputFile = velocityBaselineFile.get().asFile
+        def temporaryFile = new File(outputFile.parentFile, "${outputFile.name}.part")
+        outputFile.parentFile.mkdirs()
+        temporaryFile.delete()
+
+        try {
+            new URI(velocityBaselineUrl).toURL().withInputStream { input ->
+                temporaryFile.withOutputStream { output ->
+                    output << input
+                }
+            }
+
+            def actualSha256 = calculateSha256(temporaryFile)
+            if (actualSha256 != velocityBaselineSha256) {
+                throw new GradleException(
+                        "Velocity baseline checksum mismatch: expected ${velocityBaselineSha256}, " +
+                                "got ${actualSha256}"
+                )
+            }
+
+            if (outputFile.exists() && !outputFile.delete()) {
+                throw new GradleException("Could not replace cached Velocity baseline ${outputFile}")
+            }
+            if (!temporaryFile.renameTo(outputFile)) {
+                throw new GradleException("Could not move verified Velocity baseline to ${outputFile}")
+            }
+        } finally {
+            temporaryFile.delete()
+        }
+    }
+}
 
 allprojects {
     apply plugin: "java"
@@ -29,6 +97,12 @@ allprojects {
 }
 
 subprojects {
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(25)
+        }
+    }
+
     repositories {
         try (def scanner = new Scanner(file.repositories as File)) {
             while (scanner.hasNextLine()) {
@@ -42,8 +116,8 @@ subprojects {
     }
 
     dependencies {
-        compileOnly group: 'org.projectlombok', name: 'lombok', version: '1.18.38'
-        annotationProcessor group: 'org.projectlombok', name: 'lombok', version: '1.18.38'
+        compileOnly group: 'org.projectlombok', name: 'lombok', version: project.lombok_version
+        annotationProcessor group: 'org.projectlombok', name: 'lombok', version: project.lombok_version
 
         compileOnly("org.jetbrains:annotations:24.1.0")
         annotationProcessor("org.jetbrains:annotations:24.1.0")
@@ -74,6 +148,11 @@ subprojects {
         def env = System.getProperty("env", "AUTO").toLowerCase()
         if (env == "final") {
             ver = (project.plugin_version as String)
+            if (!(ver ==~ /\d+\.\d+\.\d+-dhw/)) {
+                throw new GradleException(
+                        "Formal DHW-PCS versions must match <major>.<minor>.<patch>-dhw"
+                )
+            }
         } else {
             ver = "Build_" + version
         }
@@ -102,11 +181,7 @@ subprojects {
 
     tasks.withType(JavaCompile).configureEach {
         options.encoding = "UTF-8"
+        options.release = 25
         file.encoding = "UTF-8"
     }
-
-    compileJava {
-        sourceCompatibility = targetCompatibility = JavaVersion.VERSION_21
-    }
 }
-

@@ -27,6 +27,20 @@ public interface HandlerAPI {
      */
     HandleResult pushPlayerJoinGame(UUID inGameUUID, String username);
 
+    /**
+     * Removes authentication state created before the Velocity login event.
+     *
+     * @param inGameUUID the player's in-game UUID
+     */
+    void discardPendingPlayerData(UUID inGameUUID);
+
+    /**
+     * Removes pending and active authentication state for a player.
+     *
+     * @param inGameUUID the player's in-game UUID
+     */
+    void discardPlayerData(UUID inGameUUID);
+
     void callPlayerJoinGame(IPlayer player);
 
     /**
