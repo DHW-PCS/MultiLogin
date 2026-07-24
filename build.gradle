@@ -160,6 +160,9 @@ subprojects {
         filter ReplaceTokens, tokens: [
                 "contributors_json": JsonOutput.toJson(contributors),
                 "contributors"     : contributors.join(", "),
+                "velocity_authors_json": JsonOutput.toJson([
+                        "DHW Maintainers (originally developed by ${contributors.join(', ')})"
+                ]),
                 "version"          : ver,
                 "build_type"       : env,
                 "build_timestamp"  : System.currentTimeMillis() as String

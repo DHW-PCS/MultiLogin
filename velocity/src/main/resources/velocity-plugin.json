@@ -2,7 +2,7 @@
   "id": "multilogin",
   "name": "MultiLogin",
   "version": "@version@",
-  "authors": @contributors_json@,
+  "authors": @velocity_authors_json@,
   "dependencies": [
     {
       "id": "floodgate",
