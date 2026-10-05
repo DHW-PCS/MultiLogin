@@ -77,6 +77,13 @@ public class PluginConfig {
         return null;
     }
 
+    void reloadMapper() {
+        if (mapperConfig == null) {
+            mapperConfig = new MapperConfig(dataFolder);
+        }
+        mapperConfig.reload();
+    }
+
     public void reload() throws IOException, URISyntaxException {
         File servicesFolder = new File(dataFolder, "services");
         if (!dataFolder.exists()) {
@@ -90,10 +97,7 @@ public class PluginConfig {
         saveResource("config.yml", false);
         saveResource("mapper.yml", false);
         saveResourceDir("examples", true);
-        if (mapperConfig != null)
-            mapperConfig.save();
-        mapperConfig = new MapperConfig(dataFolder);
-        mapperConfig.reload();
+        reloadMapper();
 
         CommentedConfigurationNode configConfigurationNode =
                 YamlConfigurationLoader.builder().file(new File(dataFolder, "config.yml")).build().load();

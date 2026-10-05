@@ -23,6 +23,8 @@ dependencies {
 
     testImplementation platform('org.junit:junit-bom:5.13.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.spongepowered:configurate-yaml:4.1.2'
+    testImplementation 'org.yaml:snakeyaml:1.33'
     testImplementation 'org.mockito:mockito-core:5.18.0'
     testImplementation project(":api")
     testImplementation project(":core")

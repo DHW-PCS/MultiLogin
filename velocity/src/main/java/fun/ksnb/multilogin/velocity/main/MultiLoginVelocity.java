@@ -15,6 +15,7 @@ import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
 import com.velocitypowered.proxy.network.Connections;
 import fun.ksnb.multilogin.velocity.impl.ChatSessionHandler;
+import fun.ksnb.multilogin.velocity.impl.ChatSessionMappingDiscovery;
 import fun.ksnb.multilogin.velocity.impl.NewChatSessionPacketIDEvent;
 import fun.ksnb.multilogin.velocity.impl.VelocityServer;
 import fun.ksnb.multilogin.velocity.logger.Slf4jLoggerBridge;
@@ -98,19 +99,11 @@ public class MultiLoginVelocity implements IPlugin {
                                     ? null
                                     : EventTask.async(() -> removePlayer(disconnectEvent.getPlayer()))
             );
+            ChatSessionMappingDiscovery discovery = new ChatSessionMappingDiscovery(multiCoreAPI, injector);
             server.getEventManager().register(this, NewChatSessionPacketIDEvent.class,
                     (AwaitingEventExecutor<NewChatSessionPacketIDEvent>) packetEvent -> EventTask.withContinuation(continuation -> {
                         try {
-                            runServer.getPlayerManager().kickPlayerIfOnline(
-                                    packetEvent.getPlayer().getUniqueId(),
-                                    multiCoreAPI.getLanguageHandler().getMessage("reconnect_msg")
-                            );
-                            multiCoreAPI.getMapperConfig().getPacketMapping().put(
-                                    packetEvent.getVersion().getProtocol(),
-                                    packetEvent.getPacketID()
-                            );
-                            multiCoreAPI.getMapperConfig().save();
-                            injector.registerChatSession(multiCoreAPI.getMapperConfig().getPacketMapping());
+                            discovery.handle(packetEvent);
                         } finally {
                             continuation.resume();
                         }

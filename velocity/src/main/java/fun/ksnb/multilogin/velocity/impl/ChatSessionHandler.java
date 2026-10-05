@@ -13,6 +13,7 @@ import java.util.OptionalInt;
 public class ChatSessionHandler extends ChannelDuplexHandler {
     private final Player player;
     private final EventManager eventManager;
+    private boolean discoveryFired;
     public ChatSessionHandler(Player player, EventManager eventManager) {
         this.player = player;
         this.eventManager = eventManager;
@@ -24,13 +25,20 @@ public class ChatSessionHandler extends ChannelDuplexHandler {
             final @NotNull Object packet
     ) throws Exception {
         if (packet instanceof ByteBuf buffer) {
-            findPlayerSessionPacketId(buffer, player.getProtocolVersion()).ifPresent(packetId ->
-                    eventManager.fire(new NewChatSessionPacketIDEvent(
-                            packetId,
-                            player.getProtocolVersion(),
-                            player
-                    ))
-            );
+            OptionalInt packetId = findPlayerSessionPacketId(buffer, player.getProtocolVersion());
+            if (packetId.isPresent()) {
+                try {
+                    if (!discoveryFired) {
+                        discoveryFired = true;
+                        eventManager.fire(new NewChatSessionPacketIDEvent(
+                                packetId.getAsInt(), player.getProtocolVersion(), player
+                        ));
+                    }
+                } finally {
+                    buffer.release();
+                }
+                return;
+            }
         }
         super.channelRead(ctx, packet);
     }
@@ -39,6 +47,7 @@ public class ChatSessionHandler extends ChannelDuplexHandler {
         ByteBuf candidate = buffer.asReadOnly();
         try {
             int packetId = ProtocolUtils.readVarInt(candidate);
+            if (packetId < 0) return OptionalInt.empty();
             ProtocolUtils.readUuid(candidate);
             ProtocolUtils.readPlayerKey(version, candidate);
             return candidate.isReadable() ? OptionalInt.empty() : OptionalInt.of(packetId);

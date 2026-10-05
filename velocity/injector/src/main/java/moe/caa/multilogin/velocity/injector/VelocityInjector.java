@@ -11,9 +11,12 @@ import io.netty.util.collection.IntObjectMap;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.function.Supplier;
@@ -80,62 +83,151 @@ public class VelocityInjector implements Injector {
 
     @Override
     public void registerChatSession(Map<Integer, Integer> packetMapping) {
+        registerChatSession(packetMapping, () -> {});
+    }
+
+    @Override
+    public synchronized void registerChatSession(
+            Map<Integer, Integer> packetMapping, Runnable completion
+    ) {
+        Map<StateRegistry.PacketRegistry.ProtocolRegistry, RegistrySnapshot> snapshots =
+                new LinkedHashMap<>();
         try {
             StateRegistry.PacketRegistry serverbound =
                     getServerboundPacketRegistry(StateRegistry.PLAY);
-
+            List<ChatRegistration> registrations = new ArrayList<>();
             var entries = new LinkedList<>(new TreeMap<>(packetMapping).entrySet());
             for (int index = 0; index < entries.size(); index++) {
                 Map.Entry<Integer, Integer> entry = entries.get(index);
-                ProtocolVersion protocolVersion =
-                        ProtocolVersion.getProtocolVersion(entry.getKey());
-                if (protocolVersion.isUnknown() || !protocolVersion.isSupported()) {
+                ProtocolVersion from = ProtocolVersion.getProtocolVersion(entry.getKey());
+                if (entry.getKey() < 761 || from.isUnknown() || !from.isSupported()) {
                     LoggerProvider.getLogger().warn(
                             "Ignoring PlayerSessionPacketBlocker mapping for unsupported "
-                            + "protocol version: " + entry.getKey()
+                                    + "protocol version: " + entry.getKey()
                     );
                     continue;
                 }
-                ProtocolVersion nextProtocolVersion = index + 1 < entries.size()
+                if (entry.getValue() < 0) {
+                    throw new IllegalArgumentException("Negative chat session packet id");
+                }
+                ProtocolVersion next = index + 1 < entries.size()
                         ? ProtocolVersion.getProtocolVersion(entries.get(index + 1).getKey())
                         : null;
-                ProtocolVersion lastCompatibleVersion = findLastCompatibleVersion(
-                        serverbound,
-                        protocolVersion,
-                        nextProtocolVersion,
-                        entry.getValue(),
-                        PlayerSessionPacketBlocker.class
+                // An unknown next boundary cannot justify inheritance into newer protocols.
+                if (next != null && (next.isUnknown() || !next.isSupported())) {
+                    next = null;
+                }
+                ProtocolVersion last = findLastCompatibleVersion(
+                        serverbound, from, next, entry.getValue(), PlayerSessionPacketBlocker.class
                 );
+                StateRegistry.PacketMapping mapping = createPacketMapping(
+                        entry.getValue(), from, last, false
+                );
+                for (ProtocolVersion protocol : EnumSet.range(from, last)) {
+                    var registry = (StateRegistry.PacketRegistry.ProtocolRegistry)
+                            getProtocolRegistriesMap(serverbound).get(protocol);
+                    validateChatRegistration(registry, entry.getValue());
+                    registrations.add(new ChatRegistration(registry, mapping));
+                }
                 LoggerProvider.getLogger().debug(
                         "Register PlayerSessionPacketBlocker for protocol version: "
-                                + entry.getKey() + " through "
-                                + lastCompatibleVersion.getProtocol()
-                );
-                registerPacket(
-                        serverbound,
-                        PlayerSessionPacketBlocker.class,
-                        PlayerSessionPacketBlocker::new,
-                        new StateRegistry.PacketMapping[]{
-                                createPacketMapping(
-                                        entry.getValue(),
-                                        protocolVersion,
-                                        lastCompatibleVersion,
-                                        false
-                                )
-                        }
+                                + entry.getKey() + " through " + last.getProtocol()
                 );
             }
+            // Validate the entire batch before any write, including completion/save failures.
+            for (ChatRegistration registration : registrations) {
+                if (!snapshots.containsKey(registration.registry())) {
+                    snapshots.put(registration.registry(), snapshot(registration));
+                }
+            }
+            for (ChatRegistration registration : registrations) {
+                registerForProtocol(registration.registry(), registration.mapping(),
+                        PlayerSessionPacketBlocker.class, PlayerSessionPacketBlocker::new);
+            }
+            completion.run();
         } catch (Throwable throwable) {
-            LoggerProvider.getLogger().error(
-                    "Unable to register PlayerSessionPacketBlocker, "
-                            + "chat session blocker does not work as expected.",
-                    throwable
-            );
+            for (RegistrySnapshot snapshot : snapshots.values()) {
+                snapshot.restore();
+            }
             throw new IllegalStateException(
-                    "Velocity 3.5.1 compatibility check failed while registering "
-                            + "chat session mappings",
+                    "Velocity 3.5.1 compatibility check failed while registering chat session mappings",
                     throwable
             );
+        }
+    }
+
+    @Override
+    public synchronized boolean isChatSessionRegistered(int protocol, int packetId) {
+        ProtocolVersion version = ProtocolVersion.getProtocolVersion(protocol);
+        if (protocol < 761 || version.isUnknown() || !version.isSupported()) {
+            return false;
+        }
+        return StateRegistry.PLAY.getProtocolRegistry(
+                com.velocitypowered.proxy.protocol.ProtocolUtils.Direction.SERVERBOUND, version
+        ).createPacket(packetId) instanceof PlayerSessionPacketBlocker;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void validateChatRegistration(
+            StateRegistry.PacketRegistry.ProtocolRegistry registry, int packetId
+    ) throws NoSuchFieldException, IllegalAccessException {
+        if (!isPacketIdCompatible(registry, packetId, PlayerSessionPacketBlocker.class)) {
+            throw new IllegalArgumentException(
+                    "Chat session packet id " + packetId + " is occupied for protocol "
+                            + registry.version.getProtocol()
+            );
+        }
+        Map<Class<? extends MinecraftPacket>, Integer> classToId =
+                (Map<Class<? extends MinecraftPacket>, Integer>) requireField(
+                        StateRegistry.PacketRegistry.ProtocolRegistry.class, "packetClassToId", Map.class
+                ).get(registry);
+        Integer registeredId = classToId.get(PlayerSessionPacketBlocker.class);
+        if (registeredId != null && registeredId != packetId) {
+            throw new IllegalArgumentException(
+                    "Chat session blocker already uses id " + registeredId + " for protocol "
+                            + registry.version.getProtocol() + "; restart after correcting mapper.yml"
+            );
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private RegistrySnapshot snapshot(ChatRegistration registration)
+            throws NoSuchFieldException, IllegalAccessException {
+        var registry = registration.registry();
+        int packetId = requireField(StateRegistry.PacketMapping.class, "id", int.class)
+                .getInt(registration.mapping());
+        var suppliers = (IntObjectMap<Supplier<? extends MinecraftPacket>>) requireField(
+                StateRegistry.PacketRegistry.ProtocolRegistry.class, "packetIdToSupplier", IntObjectMap.class
+        ).get(registry);
+        var ids = (Map<Class<? extends MinecraftPacket>, Integer>) requireField(
+                StateRegistry.PacketRegistry.ProtocolRegistry.class, "packetClassToId", Map.class
+        ).get(registry);
+        return new RegistrySnapshot(suppliers, packetId, suppliers.get(packetId), ids,
+                ids.get(PlayerSessionPacketBlocker.class));
+    }
+
+    private record ChatRegistration(
+            StateRegistry.PacketRegistry.ProtocolRegistry registry, StateRegistry.PacketMapping mapping
+    ) {}
+
+    private record RegistrySnapshot(
+            IntObjectMap<Supplier<? extends MinecraftPacket>> suppliers,
+            int packetId,
+            Supplier<? extends MinecraftPacket> originalSupplier,
+            Map<Class<? extends MinecraftPacket>, Integer> ids,
+            Integer originalId
+    ) {
+        void restore() {
+            if (originalSupplier == null) {
+                suppliers.remove(packetId);
+            } else {
+                suppliers.put(packetId, originalSupplier);
+            }
+            if (originalId == null) {
+                ids.remove(PlayerSessionPacketBlocker.class);
+            } else {
+                ids.put(PlayerSessionPacketBlocker.class, originalId);
+            }
         }
     }
 
@@ -287,15 +379,6 @@ public class VelocityInjector implements Injector {
     ) throws NoSuchMethodException, InvocationTargetException,
             InstantiationException, IllegalAccessException {
         return createPacketMapping(id, protocolVersion, null, packetDecoding);
-    }
-
-    private <P extends MinecraftPacket> void registerPacket(
-            StateRegistry.PacketRegistry packetRegistry,
-            Class<P> clazz,
-            Supplier<P> packetSupplier,
-            StateRegistry.PacketMapping[] mappings
-    ) throws NoSuchFieldException, IllegalAccessException {
-        register(packetRegistry, clazz, packetSupplier, mappings);
     }
 
     @SuppressWarnings("unchecked")

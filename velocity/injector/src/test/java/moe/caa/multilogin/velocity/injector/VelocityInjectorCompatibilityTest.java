@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import com.velocitypowered.api.network.ProtocolVersion;
 import com.velocitypowered.proxy.protocol.StateRegistry;
@@ -13,8 +14,22 @@ import com.velocitypowered.proxy.protocol.packet.chat.session.SessionPlayerChatP
 import java.util.Map;
 import moe.caa.multilogin.velocity.injector.redirect.chat.PlayerSessionPacketBlocker;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 
 class VelocityInjectorCompatibilityTest {
+    private PacketRegistrySnapshot snapshot;
+
+    @BeforeEach
+    void snapshotRegistries() throws Exception {
+        snapshot = new PacketRegistrySnapshot();
+    }
+
+    @AfterEach
+    void restoreRegistries() {
+        snapshot.close();
+    }
+
 
     @Test
     void velocity351InternalContractIsAvailable() {
@@ -120,6 +135,26 @@ class VelocityInjectorCompatibilityTest {
                         ProtocolVersion.MINECRAFT_26_2
                 ).createPacket(0x0A)
         );
+    }
+
+    @Test
+    void failedCompletionRollsBackOnlyThisBatch() throws Exception {
+        VelocityInjector injector = new VelocityInjector();
+        StateRegistry.PacketRegistry registry = injector.getServerboundPacketRegistry(StateRegistry.PLAY);
+        var version = ProtocolVersion.getProtocolVersion(775);
+        var protocolRegistry = StateRegistry.PLAY.getProtocolRegistry(SERVERBOUND, version);
+        int unrelatedId = findUnusedPacketId(protocolRegistry);
+        var unrelatedMapping = injector.createPacketMapping(unrelatedId, version, version, false);
+        assertThrows(IllegalStateException.class, () -> injector.registerChatSession(Map.of(775, 0x0A), () -> {
+            try {
+                injector.register(registry, TestChatPacket.class, TestChatPacket::new, unrelatedMapping);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+            throw new IllegalStateException("synthetic completion failure");
+        }));
+        assertFalse(injector.isChatSessionRegistered(775, 0x0A));
+        assertInstanceOf(TestChatPacket.class, protocolRegistry.createPacket(unrelatedId));
     }
 
     private static int findUnusedPacketId(

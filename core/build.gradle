@@ -15,6 +15,8 @@ dependencies {
 
     testImplementation platform('org.junit:junit-bom:5.13.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.spongepowered:configurate-yaml:4.1.2'
+    testImplementation 'org.yaml:snakeyaml:1.33'
     testImplementation project(":api")
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

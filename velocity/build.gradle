@@ -22,6 +22,7 @@ dependencies {
 
     testImplementation platform('org.junit:junit-bom:5.13.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.mockito:mockito-core:5.18.0'
     testImplementation files(rootProject.ext.velocityBaselineFile)
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
